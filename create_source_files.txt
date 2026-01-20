@@ -1,0 +1,484 @@
+# Create all source code files for Food_Found Backend
+# Run this AFTER setup-backend.ps1
+
+Write-Host "📝 Creating source code files..." -ForegroundColor Green
+
+# ============================================
+# CONFIG FILES
+# ============================================
+
+@"
+require('dotenv').config();
+
+module.exports = {
+  NODE_ENV: process.env.NODE_ENV || 'development',
+  PORT: process.env.PORT || 5000,
+  FRONTEND_URL: process.env.FRONTEND_URL || 'http://localhost:3000',
+  
+  MONGODB_URI: process.env.MONGODB_URI,
+  REDIS_URL: process.env.REDIS_URL,
+  
+  JWT_SECRET: process.env.JWT_SECRET,
+  JWT_EXPIRES_IN: process.env.JWT_EXPIRES_IN || '7d',
+  
+  BLOCKCHAIN_NETWORK: process.env.BLOCKCHAIN_NETWORK || 'polygon-mumbai',
+  INFURA_API_KEY: process.env.INFURA_API_KEY,
+  ALCHEMY_API_KEY: process.env.ALCHEMY_API_KEY,
+  PRIVATE_KEY: process.env.PRIVATE_KEY,
+  CONTRACT_ADDRESS: process.env.CONTRACT_ADDRESS,
+  
+  CLOUDINARY_CLOUD_NAME: process.env.CLOUDINARY_CLOUD_NAME,
+  CLOUDINARY_API_KEY: process.env.CLOUDINARY_API_KEY,
+  CLOUDINARY_API_SECRET: process.env.CLOUDINARY_API_SECRET,
+  
+  SENDGRID_API_KEY: process.env.SENDGRID_API_KEY,
+  FROM_EMAIL: process.env.FROM_EMAIL,
+  
+  GOOGLE_MAPS_API_KEY: process.env.GOOGLE_MAPS_API_KEY,
+  
+  RATE_LIMIT_WINDOW_MS: process.env.RATE_LIMIT_WINDOW_MS || 900000,
+  RATE_LIMIT_MAX_REQUESTS: process.env.RATE_LIMIT_MAX_REQUESTS || 100
+};
+"@ | Out-File -FilePath "src\config\env.js" -Encoding utf8
+
+@"
+const mongoose = require('mongoose');
+const config = require('./env');
+const logger = require('../utils/logger');
+
+const connectDB = async () => {
+  try {
+    await mongoose.connect(config.MONGODB_URI);
+    logger.info('MongoDB connected successfully');
+  } catch (error) {
+    logger.error('MongoDB connection error:', error);
+    process.exit(1);
+  }
+};
+
+module.exports = connectDB;
+"@ | Out-File -FilePath "src\config\database.js" -Encoding utf8
+
+@"
+const { ethers } = require('ethers');
+const config = require('./env');
+
+const getProvider = () => {
+  if (config.ALCHEMY_API_KEY) {
+    return new ethers.AlchemyProvider(
+      config.BLOCKCHAIN_NETWORK,
+      config.ALCHEMY_API_KEY
+    );
+  } else if (config.INFURA_API_KEY) {
+    return new ethers.InfuraProvider(
+      config.BLOCKCHAIN_NETWORK,
+      config.INFURA_API_KEY
+    );
+  }
+  throw new Error('No blockchain provider configured');
+};
+
+const getWallet = () => {
+  const provider = getProvider();
+  return new ethers.Wallet(config.PRIVATE_KEY, provider);
+};
+
+module.exports = { getProvider, getWallet };
+"@ | Out-File -FilePath "src\config\blockchain.js" -Encoding utf8
+
+Write-Host "✅ Config files created" -ForegroundColor Green
+
+# ============================================
+# MODELS
+# ============================================
+
+@"
+const mongoose = require('mongoose');
+const bcrypt = require('bcryptjs');
+
+const userSchema = new mongoose.Schema({
+  email: {
+    type: String,
+    required: true,
+    unique: true,
+    lowercase: true,
+    trim: true
+  },
+  password: {
+    type: String,
+    required: true,
+    minLength: 8
+  },
+  name: {
+    type: String,
+    required: true,
+    trim: true
+  },
+  userType: {
+    type: String,
+    enum: ['donor', 'recipient', 'both'],
+    default: 'both'
+  },
+  walletAddress: {
+    type: String,
+    unique: true,
+    sparse: true
+  },
+  profile: {
+    avatar: String,
+    bio: String,
+    phone: String,
+    location: {
+      city: String,
+      state: String,
+      zipCode: String
+    }
+  },
+  reputation: {
+    score: {
+      type: Number,
+      default: 100,
+      min: 0,
+      max: 1000
+    },
+    donations: { type: Number, default: 0 },
+    claims: { type: Number, default: 0 },
+    completions: { type: Number, default: 0 },
+    cancellations: { type: Number, default: 0 }
+  },
+  verified: {
+    email: { type: Boolean, default: false },
+    phone: { type: Boolean, default: false },
+    identity: { type: Boolean, default: false }
+  },
+  notifications: {
+    email: { type: Boolean, default: true },
+    push: { type: Boolean, default: true },
+    newListings: { type: Boolean, default: true },
+    claims: { type: Boolean, default: true }
+  },
+  isActive: {
+    type: Boolean,
+    default: true
+  },
+  lastLogin: Date,
+  resetPasswordToken: String,
+  resetPasswordExpires: Date
+}, {
+  timestamps: true
+});
+
+userSchema.pre('save', async function(next) {
+  if (!this.isModified('password')) return next();
+  this.password = await bcrypt.hash(this.password, 12);
+  next();
+});
+
+userSchema.methods.comparePassword = async function(candidatePassword) {
+  return await bcrypt.compare(candidatePassword, this.password);
+};
+
+userSchema.methods.toJSON = function() {
+  const obj = this.toObject();
+  delete obj.password;
+  delete obj.resetPasswordToken;
+  delete obj.resetPasswordExpires;
+  return obj;
+};
+
+module.exports = mongoose.model('User', userSchema);
+"@ | Out-File -FilePath "src\models\User.js" -Encoding utf8
+
+@"
+const mongoose = require('mongoose');
+
+const foodListingSchema = new mongoose.Schema({
+  donor: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User',
+    required: true
+  },
+  title: {
+    type: String,
+    required: true,
+    trim: true,
+    maxLength: 200
+  },
+  description: {
+    type: String,
+    required: true,
+    maxLength: 1000
+  },
+  category: {
+    type: String,
+    enum: ['produce', 'dairy', 'meat', 'prepared', 'baked', 'other'],
+    required: true
+  },
+  quantity: {
+    amount: { type: Number, required: true },
+    unit: { type: String, required: true }
+  },
+  expiryDate: {
+    type: Date,
+    required: true
+  },
+  location: {
+    type: {
+      type: String,
+      enum: ['Point'],
+      default: 'Point'
+    },
+    coordinates: {
+      type: [Number],
+      required: true
+    },
+    address: {
+      type: String,
+      required: true
+    },
+    city: String,
+    state: String,
+    zipCode: String
+  },
+  images: [{
+    url: String,
+    publicId: String
+  }],
+  status: {
+    type: String,
+    enum: ['available', 'claimed', 'completed', 'expired', 'cancelled'],
+    default: 'available'
+  },
+  claimedBy: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User'
+  },
+  claimedAt: Date,
+  pickupTime: Date,
+  blockchainTxHash: String,
+  tokenId: Number,
+  views: {
+    type: Number,
+    default: 0
+  },
+  rating: {
+    type: Number,
+    min: 1,
+    max: 5
+  },
+  review: String
+}, {
+  timestamps: true
+});
+
+foodListingSchema.index({ location: '2dsphere' });
+foodListingSchema.index({ status: 1, expiryDate: 1 });
+foodListingSchema.index({ donor: 1, createdAt: -1 });
+
+foodListingSchema.virtual('hoursUntilExpiry').get(function() {
+  return Math.round((this.expiryDate - new Date()) / (1000 * 60 * 60));
+});
+
+module.exports = mongoose.model('FoodListing', foodListingSchema);
+"@ | Out-File -FilePath "src\models\FoodListing.js" -Encoding utf8
+
+@"
+const mongoose = require('mongoose');
+
+const transactionSchema = new mongoose.Schema({
+  listing: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'FoodListing',
+    required: true
+  },
+  donor: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User',
+    required: true
+  },
+  recipient: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User',
+    required: true
+  },
+  status: {
+    type: String,
+    enum: ['pending', 'completed', 'cancelled'],
+    default: 'pending'
+  },
+  blockchainTxHash: String,
+  completedAt: Date,
+  rating: Number,
+  review: String
+}, {
+  timestamps: true
+});
+
+module.exports = mongoose.model('Transaction', transactionSchema);
+"@ | Out-File -FilePath "src\models\Transaction.js" -Encoding utf8
+
+@"
+const mongoose = require('mongoose');
+
+const notificationSchema = new mongoose.Schema({
+  user: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User',
+    required: true
+  },
+  type: {
+    type: String,
+    enum: ['new_listing', 'claim', 'message', 'rating', 'system'],
+    required: true
+  },
+  title: String,
+  message: String,
+  data: mongoose.Schema.Types.Mixed,
+  read: {
+    type: Boolean,
+    default: false
+  },
+  readAt: Date
+}, {
+  timestamps: true
+});
+
+notificationSchema.index({ user: 1, read: 1, createdAt: -1 });
+
+module.exports = mongoose.model('Notification', notificationSchema);
+"@ | Out-File -FilePath "src\models\Notification.js" -Encoding utf8
+
+Write-Host "✅ Models created" -ForegroundColor Green
+
+# ============================================
+# CONTROLLERS
+# ============================================
+
+@"
+const jwt = require('jsonwebtoken');
+const User = require('../models/User');
+const config = require('../config/env');
+const logger = require('../utils/logger');
+
+const generateToken = (userId) => {
+  return jwt.sign({ id: userId }, config.JWT_SECRET, {
+    expiresIn: config.JWT_EXPIRES_IN
+  });
+};
+
+exports.register = async (req, res, next) => {
+  try {
+    const { email, password, name, userType } = req.body;
+
+    const existingUser = await User.findOne({ email });
+    if (existingUser) {
+      return res.status(400).json({ error: 'Email already registered' });
+    }
+
+    const user = await User.create({
+      email,
+      password,
+      name,
+      userType
+    });
+
+    const token = generateToken(user._id);
+
+    logger.info(\`New user registered: \${email}\`);
+
+    res.status(201).json({
+      success: true,
+      token,
+      user: {
+        id: user._id,
+        email: user.email,
+        name: user.name,
+        userType: user.userType
+      }
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+exports.login = async (req, res, next) => {
+  try {
+    const { email, password } = req.body;
+
+    const user = await User.findOne({ email });
+    if (!user) {
+      return res.status(401).json({ error: 'Invalid credentials' });
+    }
+
+    const isMatch = await user.comparePassword(password);
+    if (!isMatch) {
+      return res.status(401).json({ error: 'Invalid credentials' });
+    }
+
+    user.lastLogin = new Date();
+    await user.save();
+
+    const token = generateToken(user._id);
+
+    logger.info(\`User logged in: \${email}\`);
+
+    res.json({
+      success: true,
+      token,
+      user: {
+        id: user._id,
+        email: user.email,
+        name: user.name,
+        userType: user.userType,
+        walletAddress: user.walletAddress
+      }
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+exports.getProfile = async (req, res, next) => {
+  try {
+    const user = await User.findById(req.user.id);
+    res.json({ success: true, user });
+  } catch (error) {
+    next(error);
+  }
+};
+
+exports.updateProfile = async (req, res, next) => {
+  try {
+    const updates = req.body;
+    delete updates.password;
+    delete updates.email;
+
+    const user = await User.findByIdAndUpdate(
+      req.user.id,
+      { \$set: updates },
+      { new: true, runValidators: true }
+    );
+
+    res.json({ success: true, user });
+  } catch (error) {
+    next(error);
+  }
+};
+"@ | Out-File -FilePath "src\controllers\authController.js" -Encoding utf8
+
+Write-Host "✅ Controllers created (authController)" -ForegroundColor Green
+Write-Host "Creating remaining files..." -ForegroundColor Yellow
+
+# I'll create the rest in the next section due to length...
+# Let me know if you want me to continue with all files!
+
+Write-Host ""
+Write-Host "✅ Core source files created!" -ForegroundColor Green
+Write-Host ""
+Write-Host "⚠️ This is a partial setup. I can create ALL remaining files." -ForegroundColor Yellow
+Write-Host "Would you like me to continue? (foodController, routes, middleware, services, utils, server.js, app.js)" -ForegroundColor Yellow
+Write-Host ""
+Write-Host "For now, you can:" -ForegroundColor Cyan
+Write-Host "1. Copy .env.example to .env" -ForegroundColor White
+Write-Host "2. Run: npm install" -ForegroundColor White
+Write-Host ""
